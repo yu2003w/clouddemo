@@ -1,0 +1,194 @@
+# deploy ceph cluster with cephadm
+https://docs.ceph.com/en/octopus/cephadm/install/
+
+1, install docker/podman on host
+   https://podman.io/getting-started/installation
+   . /etc/os-release
+   echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+   curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key | sudo apt-key add -
+   apt-get update
+   apt-get -y upgrade
+   apt-get -y install podman
+2, install cephadm
+   apt-get install cephadm -y
+3, bootstrap cluster
+   cephadm bootstrap --mon-ip 192.168.20.62
+   ceph orch apply osd --all-available-devices --unmanaged=true
+3, add hosts
+   ssh-copy-id -f -i /etc/ceph/ceph.pub root@ubuntu62
+   ssh-copy-id -f -i /etc/ceph/ceph.pub root@compute-63
+   ssh-copy-id -f -i /etc/ceph/ceph.pub root@ubuntu64
+   ceph orch host add ctl-62
+   ceph orch host add compute-63
+   ceph orch host add compute-64
+4, deploy osd services
+   ceph orch device ls
+   ceph orch apply osd --all-available-devices
+   或者使用
+   ceph orch apply osd --all-available-devices --unmanaged=true
+   ceph orch daemon add osd ubuntu62:/dev/sdb
+   ceph orch daemon add osd compute-63:/dev/sdb
+   ceph orch daemon add osd ubuntu64:/dev/sdb
+
+# remove osd and check status
+ceph orch osd rm <osd id>
+ceph orch osd rm status
+ceph osd crush remove <osd id>
+# erasing device
+ceph orch device zap my_hostname /dev/sdx
+
+# destroy cluster
+cephadm rm-cluster --force
+
+# security setting
+ceph config set mon auth_allow_insecure_global_id_reclaim false
+
+# common instructions
+rados lspools
+ceph osd pool deep-scrub <pool name>
+
+# create volumes and initialize 
+ceph osd pool create volumes
+ceph osd pool create images
+ceph osd pool create backups
+ceph osd pool create vms
+rbd pool init volumes
+rbd pool init images
+rbd pool init backups
+rbd pool init vms
+
+# create user for nova/cinder, glance
+ceph auth get-or-create client.glance mon 'profile rbd' osd 'profile rbd pool=images' mgr 'profile rbd pool=images'
+ceph auth get-or-create client.cinder mon 'profile rbd' osd 'profile rbd pool=volumes, profile rbd pool=vms, profile rbd-read-only pool=images' mgr 'profile rbd pool=volumes, profile rbd pool=vms'
+ceph auth get-or-create client.cinder-backup mon 'profile rbd' osd 'profile rbd pool=backups' mgr 'profile rbd pool=backups'
+
+# Add the keyrings for client.cinder, client.glance, and client.cinder-backup to 
+# the appropriate nodes and change their ownership
+ceph auth get-or-create client.glance | ssh {your-glance-api-server} sudo tee /etc/ceph/ceph.client.glance.keyring
+ssh {your-glance-api-server} sudo chown glance:glance /etc/ceph/ceph.client.glance.keyring
+
+ceph auth get-or-create client.cinder | ssh {your-volume-server} sudo tee /etc/ceph/ceph.client.cinder.keyring
+ssh {your-cinder-volume-server} sudo chown cinder:cinder /etc/ceph/ceph.client.cinder.keyring
+
+ceph auth get-or-create client.cinder-backup | ssh {your-cinder-backup-server} sudo tee /etc/ceph/ceph.client.cinder-backup.keyring
+ssh {your-cinder-backup-server} sudo chown cinder:cinder /etc/ceph/ceph.client.cinder-backup.keyring
+
+ceph auth get-or-create client.cinder | ssh {your-nova-compute-server} sudo tee /etc/ceph/ceph.client.cinder.keyring
+
+ceph auth get-key client.cinder | ssh {your-compute-node} tee client.cinder.key
+
+# configure openstack
+https://docs.ceph.com/en/octopus/rbd/rbd-openstack/
+
+ceph auth get-key client.cinder | ssh {your-compute-node} tee client.cinder.key
+#execute following instructions on nova-compute nodes
+uuidgen
+938acd82-d033-4e2a-8e7e-dac6ddb74b80
+
+cat > secret.xml <<EOF
+<secret ephemeral='no' private='no'>
+  <uuid>938acd82-d033-4e2a-8e7e-dac6ddb74b80</uuid>
+  <usage type='ceph'>
+    <name>client.cinder secret</name>
+  </usage>
+</secret>
+EOF
+virsh secret-define --file secret.xml
+virsh secret-set-value --secret 938acd82-d033-4e2a-8e7e-dac6ddb74b80 --base64 $(cat client.cinder.key) && rm client.cinder.key secret.xml
+
+# edit /etc/glance/glance.conf to make openstack to store images
+
+# edit /etc/cinder/cinder.conf to make openstack using ceph rbd
+
+mkdir -p /var/run/ceph/guests/ /var/log/qemu/
+chown libvirt-qemu:libvirt-qemu /var/run/ceph/guests /var/log/qemu/
+
+# ceph cluster operating guide
+https://docs.ceph.com/en/octopus/rados/operations/operating/
+
+
+# restart openstack services
+glance-control api restart
+service nova-compute restart
+service cinder-volume restart
+service cinder-backup restart
+
+
+# create volume type and link with backend
+openstack volume type create ceph --description "Storage provided by ceph"
+openstack volume type set ceph --property volume_backend_name=ceph
+# create volume
+openstack volume create test-ceph --size=2 --type=ceph
+
+# boot instance with volume
+https://docs.openstack.org/nova/latest/user/launch-instance-from-volume.html#create-volume-from-image-and-boot-instance
+
+# create instance attached data volume
+wget https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-amd64.img
+glance image-create --name "bionic" \
+  --file bionic-server-cloudimg-amd64.img \
+  --disk-format raw --container-format bare \
+  --visibility=public
+openstack flavor create --id 1 --vcpus 2 --ram 2048 --disk 10 m1.medium
+
+openstack server create --flavor m1.medium --image bionic \
+  --nic net-id=6a5d1513-c6a6-4648-accd-c34b3e2e1a28 --security-group default \
+  --block-device-mapping vdb=facae099-a19c-4c5a-910f-aef7c162a0b6 \
+  --key-name mykey inst-volume
+
+# create volume from image and boot instance
+openstack volume create --image bionic --size 15 --type ceph bootvol-ubuntu
+openstack server create --flavor m1.medium --key-name mykey \
+  --nic net-id=6a5d1513-c6a6-4648-accd-c34b3e2e1a28 --security-group default \
+  --volume 84fb00c0-6f00-4376-bf75-5ca349053464 vol-inst
+
+# boot instance from volume with both swap and ephemeral disk
+openstack flavor create --id 2 --vcpus 2 --ram 2048 --disk 10 --swap 2048 --ephemeral 2 m1.medium-swap
+openstack server create --flavor m1.medium-swap --key-name mykey \
+  --nic net-id=6a5d1513-c6a6-4648-accd-c34b3e2e1a28 --security-group default \
+  --volume 84fb00c0-6f00-4376-bf75-5ca349053464 vol-inst
+
+# take snapshot from the volume
+openstack volume snapshot create --volume test-ceph test-ceph-1
+
+# create image from running instance
+openstack server image create --name test-ceph-2 vol-inst
+openstack server create --flavor m1.medium --key-name mykey \
+  --nic net-id=dc1a1c72-b448-4929-8751-f66b8e3e2af0 --security-group default \
+  --boot-from-volume ed3cda62-8d94-4cca-a8dd-5a983427a96d vol-inst1
+
+# how to partition a disk
+fdisk /dev/vdb to create G table
+mkfx.ext4 -F /dev/vdb1
+mkdir -p /mnt/data
+mount /dev/vdb1 /mnt/data
+
+# get crush map
+ceph osd getcrushmap -o cmap
+crushtool -d cmap
+
+
+# list pool and objects in the pool
+rados lspools
+rados ls -p volumes
+
+ceph pg <pgid> query
+ceph pg 2.1c list_unfound
+
+
+# cinder-manager host list
+# cinder get-pools
+
+
+# get crush dump information
+ceph osd crush tree
+ceph osd crush dump
+
+# get erasure-code pool profile
+ceph osd erasure-code-profile
+
+
+# list block device images
+rbd ls <pool>
+rbd info <pool>/<image>
+

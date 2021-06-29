@@ -1,0 +1,366 @@
+octavia:
+root@ubuntu62:/home/gaozf# echo $BRNAME
+brq834281f4-ce
+
+root@ubuntu62:/home/gaozf# echo $MGMT_PORT_MAC
+fa:16:3e:dd:a0:c3
+
+
+# install openstack victoria on ubuntu
+add-apt-repository cloud-archive:victoria
+apt update && apt dist-upgrade
+apt install -y python3-openstackclient
+
+# install core components
+apt install -y mariadb-server python3-pymysql
+apt install -y rabbitmq-server
+rabbitmqctl add_user openstack openstack
+rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+apt install -y memcached python3-memcache
+apt install -y etcd
+
+# install openstack services keystone
+CREATE DATABASE keystone;
+GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY 'keystone';
+GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY 'keystone';
+apt install -y keystone
+# edit /etc/keystone/keystone.conf
+su -s /bin/sh -c "keystone-manage db_sync" keystone
+keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+keystone-manage credential_setup --keystone-user keystone --keystone-group keystone
+
+keystone-manage bootstrap --bootstrap-password admin \
+--bootstrap-admin-url http://192.168.20.62:5000/v3/ \
+--bootstrap-internal-url http://192.168.20.62:5000/v3/ \
+--bootstrap-public-url http://192.168.20.62:5000/v3/ \
+--bootstrap-region-id RegionOne
+
+# edit  /etc/apache2/apache2.conf
+service apache2 restart
+export OS_USERNAME=admin
+export OS_PASSWORD=admin
+export OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_AUTH_URL=http://192.168.20.62:5000/v3
+export OS_IDENTITY_API_VERSION=3
+
+openstack domain create --description "An Example Domain" example
+openstack project create --domain default --description "Service Project" service
+openstack project create --domain default --description "Demo Project" myproject
+openstack user create --domain default   --password-prompt myuser
+openstack role create myrole
+openstack role add --project myproject --user myuser myrole
+
+unset OS_AUTH_URL OS_PASSWORD
+openstack --os-auth-url http://192.168.20.62:5000/v3 \
+--os-project-domain-name Default --os-user-domain-name Default \
+--os-project-name admin --os-username admin token issue
+
+openstack --os-auth-url http://192.168.20.62:5000/v3 \
+--os-project-domain-name Default --os-user-domain-name Default \
+--os-project-name myproject --os-username myuser token issue
+
+# install glance
+CREATE DATABASE glance;
+GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY 'glance';
+GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY 'glance';
+
+openstack user create --domain default --password-prompt glance
+openstack role add --project service --user glance admin
+openstack service create --name glance --description "OpenStack Image" image
+
+openstack endpoint create --region RegionOne image public http://192.168.20.62:9292
+openstack endpoint create --region RegionOne image internal http://192.168.20.62:9292
+openstack endpoint create --region RegionOne image admin http://192.168.20.62:9292
+
+apt install glance -y
+# edit /etc/glance/glance-api.conf
+su -s /bin/sh -c "glance-manage db_sync" glance
+service glance-api restart
+
+# install placement
+CREATE DATABASE placement;
+GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'localhost' IDENTIFIED BY 'placement';
+GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%' IDENTIFIED BY 'placement';
+
+openstack user create --domain default --password-prompt placement
+openstack role add --project service --user placement admin
+
+openstack service create --name placement --description "Placement API" placement
+openstack endpoint create --region RegionOne placement public http://192.168.20.62:8778
+openstack endpoint create --region RegionOne placement internal http://192.168.20.62:8778
+openstack endpoint create --region RegionOne placement admin http://192.168.20.62:8778
+
+apt install placement-api -y
+# edit /etc/placement/placement.conf
+su -s /bin/sh -c "placement-manage db sync" placement
+
+# install nova on controller node
+CREATE DATABASE nova_api;
+CREATE DATABASE nova;
+CREATE DATABASE nova_cell0;
+
+GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY 'nova';
+GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY 'nova';
+GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY 'nova';
+GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY 'nova';
+GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost' IDENTIFIED BY 'nova';
+GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%' IDENTIFIED BY 'nova';
+
+openstack user create --domain default --password-prompt nova
+openstack role add --project service --user nova admin
+
+openstack service create --name nova --description "OpenStack Compute" compute
+openstack endpoint create --region RegionOne compute public http://192.168.20.62:8774/v2.1
+openstack endpoint create --region RegionOne compute internal http://192.168.20.62:8774/v2.1
+openstack endpoint create --region RegionOne compute admin http://192.168.20.62:8774/v2.1
+
+apt install nova-api nova-conductor nova-novncproxy nova-scheduler -y
+
+#install neutron
+CREATE DATABASE neutron;
+GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY 'neutron';
+GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY 'neutron';
+
+. admin-openrc
+openstack user create --domain default --password-prompt neutron
+openstack role add --project service --user neutron admin
+openstack service create --name neutron --description "OpenStack Networking" network
+openstack endpoint create --region RegionOne  network public http://192.168.20.62:9696
+openstack endpoint create --region RegionOne  network internal http://192.168.20.62:9696
+openstack endpoint create --region RegionOne  network admin http://192.168.20.62:9696
+
+apt install neutron-server neutron-plugin-ml2 \
+  neutron-linuxbridge-agent neutron-l3-agent neutron-dhcp-agent \
+  neutron-metadata-agent -y
+
+su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf \
+  --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron
+
+service nova-api restart
+service neutron-server restart
+service neutron-linuxbridge-agent restart
+service neutron-dhcp-agent restart
+service neutron-metadata-agent restart
+service neutron-l3-agent restart
+
+su -s /bin/sh -c "nova-manage api_db sync" nova
+su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova
+su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova
+su -s /bin/sh -c "nova-manage db sync" nova
+su -s /bin/sh -c "nova-manage cell_v2 list_cells" nova
+
+service nova-api restart
+service nova-scheduler restart
+service nova-conductor restart
+service nova-novncproxy restart
+
+# install compute node
+apt install nova-compute -y 
+apt install neutron-linuxbridge-agent -y
+# edit /etc/neutron/neutron.conf
+# edit /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+service nova-compute restart
+service neutron-linuxbridge-agent restart
+
+# verify installation
+. admin-openrc
+openstack compute service list --service nova-compute
+openstack catalog list
+openstack image list
+
+# install dashboard
+apt install openstack-dashboard -y
+# edit /etc/openstack-dashboard/local_settings.py
+
+# install cinder
+CREATE DATABASE cinder;
+GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'localhost' IDENTIFIED BY 'cinder';
+GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'%' IDENTIFIED BY 'cinder';
+
+openstack user create --domain default --password-prompt cinder
+openstack role add --project service --user cinder admin
+
+openstack service create --name cinderv2 --description "OpenStack Block Storage" volumev2
+openstack service create --name cinderv3 --description "OpenStack Block Storage" volumev3
+
+openstack endpoint create --region RegionOne volumev2 public http://192.168.20.62:8776/v2/%\(project_id\)s
+openstack endpoint create --region RegionOne volumev2 internal http://192.168.20.62:8776/v2/%\(project_id\)s
+openstack endpoint create --region RegionOne volumev2 admin http://192.168.20.62:8776/v2/%\(project_id\)s
+
+openstack endpoint create --region RegionOne volumev3 public http://192.168.20.62:8776/v3/%\(project_id\)s
+openstack endpoint create --region RegionOne volumev3 internal http://192.168.20.62:8776/v3/%\(project_id\)s
+openstack endpoint create --region RegionOne volumev3 admin http://192.168.20.62:8776/v3/%\(project_id\)s
+
+apt install cinder-api cinder-scheduler -y
+# configure /etc/cinder/cinder.conf
+su -s /bin/sh -c "cinder-manage db sync" cinder
+service nova-api restart
+service cinder-scheduler restart
+service apache2 restart
+
+# install cinder backup
+apt-get install cinder-backup -y
+
+#prepare storage device, using lvm, iscsi or ceph
+
+# configure lvm storage node
+apt install lvm2 thin-provisioning-tools
+pvcreate /dev/sdc
+vgcreate cinder-volumes /dev/sdc
+apt install cinder-volume -y
+
+service tgt restart
+service cinder-volume restart
+
+# install cinder backup service
+apt install cinder-backup -y 
+
+
+# check cinder status
+cinder get-pools --detail
+openstack limits show --absolute --sort-column Name
+
+openstack volume service list
+
+# create provider network
+. admin-openrc
+openstack network create  --share --external \
+  --provider-physical-network provider \
+  --provider-network-type flat provider
+openstack subnet create --network provider \
+  --allocation-pool start=192.168.21.200,end=192.168.21.254 \
+  --dns-nameserver 192.168.8.254 --gateway 192.168.21.1 \
+  --subnet-range 192.168.21.0/24 provider
+
+# create selfservice network
+. demo-openrc
+openstack network create selfservice
+openstack subnet create --network selfservice \
+  --dns-nameserver 192.168.8.254 --gateway 175.19.1.1 \
+  --subnet-range 175.19.1.0/24 selfservice
+
+openstack router create router
+openstack router add subnet router selfservice
+openstack router set router --external-gateway provider
+
+# verify operation
+. admin-openrc
+ip netns
+openstack port list --router router
+
+# launch instance
+ssh-keygen -q -N ""
+openstack keypair create --public-key ~/.ssh/id_rsa.pub mykey
+openstack keypair list
+openstack security group rule create --proto icmp default
+openstack security group rule create --proto tcp --dst-port 22 default
+
+. demon-openrc
+openstack flavor list
+openstack image list
+openstack network list
+openstack security group list
+
+# launch instance on provider network
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=6a5d1513-c6a6-4648-accd-c34b3e2e1a28 --security-group default \
+  --key-name mykey provider-instance
+
+# launch instance on selfservice network
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=b28f0ee9-a077-4917-ba95-de1afeb226da --security-group default \
+  --key-name mykey selfservice-test-1
+openstack console url show selfservice-test-1
+openstack floating ip create provider
+openstack server add floating ip selfservice-test-1 192.168.21.249
+
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=b28f0ee9-a077-4917-ba95-de1afeb226da --nic net-id=9166fd38-6dad-4481-ac30-bbb746d7e2c2 \
+  --security-group default \
+  --key-name mykey test-1
+
+# install designate
+openstack user create --domain default --password-prompt designate
+openstack role add --project service --user designate admin
+openstack service create --name designate --description "DNS" dns
+openstack endpoint create --region RegionOne dns public http://192.168.20.62:9001/
+apt-get install designate -y
+
+CREATE DATABASE designate CHARACTER SET utf8 COLLATE utf8_general_ci;
+GRANT ALL PRIVILEGES ON designate.* TO 'designate'@'localhost' IDENTIFIED BY 'designate';
+GRANT ALL PRIVILEGES ON designate.* TO 'designate'@'%' IDENTIFIED BY 'designate';
+
+apt-get install bind9 bind9utils bind9-doc -y
+rndc-confgen -a -k designate -c /etc/designate/rndc.key
+# edit /etc/bind/named.conf.options
+cp  /etc/designate/rndc.key /etc/bind/
+
+# edit /etc/designate/designate.conf, add connection in [database] section
+su -s /bin/sh -c "designate-manage database sync" designate
+systemctl start designate-central designate-api
+systemctl enable designate-central designate-api
+
+apt install designate-worker designate-producer designate-mdns -y
+systemctl start designate-worker designate-producer designate-mdns
+systemctl enable designate-worker designate-producer designate-mdns
+
+#verify designate service
+. admin-openrc
+openstack dns service list
+. demo-openrc
+openstack zone create --email yu.wei@yamu.com testopenstack.com.
+openstack zone list
+openstack recordset create --record '175.19.1.203' --type A testopenstack.com. abc
+
+# openstack neutron internal dns integration
+openstack port create --network selfservice --dns-name selfport port-dns-test1
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=dc1a1c72-b448-4929-8751-f66b8e3e2af0 --security-group default \
+  --key-name mykey dns3
+
+
+
+# heat installation
+CREATE DATABASE heat;
+GRANT ALL PRIVILEGES ON heat.* TO 'heat'@'localhost' \
+  IDENTIFIED BY 'heat';
+GRANT ALL PRIVILEGES ON heat.* TO 'heat'@'%' \
+  IDENTIFIED BY 'heat';
+openstack user create --domain default --password-prompt heat
+openstack role add --project service --user heat admin
+openstack service create --name heat \
+  --description "Orchestration" orchestration
+openstack service create --name heat-cfn \
+  --description "Orchestration"  cloudformation
+
+openstack endpoint create --region RegionOne \
+  orchestration public http://192.168.20.62:8004/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne \
+  orchestration internal http://192.168.20.62:8004/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne \
+  orchestration admin http://192.168.20.62:8004/v1/%\(tenant_id\)s
+
+openstack endpoint create --region RegionOne \
+  cloudformation public http://192.168.20.62:8000/v1
+openstack endpoint create --region RegionOne \
+  cloudformation internal http://192.168.20.62:8000/v1
+openstack endpoint create --region RegionOne \
+  cloudformation admin http://192.168.20.62:8000/v1
+
+openstack domain create --description "Stack projects and users" heat
+openstack user create --domain heat --password-prompt heat_domain_admin
+openstack role add --domain heat --user-domain heat --user heat_domain_admin admin
+openstack role create heat_stack_owner
+openstack role add --project demo --user demo heat_stack_owner
+openstack role create heat_stack_user
+
+apt-get install heat-api heat-api-cfn heat-engine
+# edit /etc/heat/heat.conf
+su -s /bin/sh -c "heat-manage db_sync" heat
+service heat-api restart
+service heat-api-cfn restart
+service heat-engine restart
+# verify operation
+openstack orchestration service list

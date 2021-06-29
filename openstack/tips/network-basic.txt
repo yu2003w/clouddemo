@@ -1,0 +1,96 @@
+# check routing info
+route -n
+ip route show
+netstat -rn
+ip route get <host ip>
+
+# show detailed information about nic device
+ip -d link show <nic name>
+
+# linux tun/tap device
+tun/tap是操作系统内核中的虚拟网络设备。tun是网络层的虚拟网络设备，收发三层数据包。
+tap是链路层网络设备，收发第二层网络数据包。
+
+# linux network namespace 
+1，添加并启动虚拟网卡设备tap0/1
+ip tuntap add dev tap0 mode tap
+ip tuntap add dev tap1 mode tap
+ip link set tap0 up
+ip link set tap1 up
+2, 配置ip地址
+ip addr add 176.23.0.2/24 dev tap0
+ip addr add 176.23.0.3/24 dev tap1
+3，添加netns
+ip netns add ns0
+ip netns add ns1
+4, 将虚拟网卡设备分别移动到ns0,ns1,移动之后网卡会down并且丢失ip信息
+ip link set tap0 netns ns0
+ip link set tap1 netns ns1
+5, 查看网卡信息
+ip netns exec ns0 ifconfig -a
+ip netns exec ns1 ifconfig -a
+6，重新启动ns0和ns1中的网卡
+ip netns exec ns0 ip link set lo up
+ip netns exec ns0 ip link set tap0 up
+ip netns exec ns0 ip addr add 10.0.0.2/24 dev tap0
+
+ip netns exec ns1 ip link set lo up
+ip netns exec ns1 ip link set tap1 up
+ip netns exec ns1 ip addr add 10.0.0.3/24 dev tap1
+
+# linux veth pair
+1, 创建veth pair
+ip link add vtest0 type veth peer name vtest1
+2, 将veth pair移动到netns中
+ip link set vtest0 netns ns0
+ip link set vtest1 netns ns1
+ip netns exec ns0 ip link set vtest0 up
+ip netns exec ns1 ip link set vtest1 up
+3, 修改路由规则
+ip netns exec ns0 ip route change 10.0.0.0/24 via 0.0.0.0 dev vtest0
+ip netns exec ns1 ip route change 10.0.0.0/24 via 0.0.0.0 dev vtest1
+
+# linux bridge
+1, 创建网桥
+brctl addbr brtest0
+ip link set brtest0 up
+2，创建network namespace
+ip netns add nstest0
+ip netns add nstest1
+ip netns add nstest2
+3, 创建veth pair
+ip link add veth-ns0 type veth peer name vethbr-0
+ip link add veth-ns1 type veth peer name vethbr-1
+ip link add veth-ns2 type veth peer name vethbr-2
+4, 将veth的一端移动到ns中
+ip link set veth-ns0 netns nstest0
+ip link set veth-ns1 netns nstest1
+ip link set veth-ns2 netns nstest2
+5, 启动网卡并配置ip
+ip netns exec nstest0 ip link set lo up
+ip netns exec nstest0 ip link set veth-ns0 up
+ip netns exec nstest0 ip addr add 10.0.0.4/24 dev veth-ns0
+ip netns exec nstest1 ip link set lo up
+ip netns exec nstest1 ip link set veth-ns1 up
+ip netns exec nstest1 ip addr add 10.0.0.5/24 dev veth-ns1
+ip netns exec nstest2 ip link set lo up
+ip netns exec nstest2 ip link set veth-ns2 up
+ip netns exec nstest2 ip addr add 10.0.0.6/24 dev veth-ns2
+6, 将veth pair的另一端连接在网桥上
+ip link set vethbr-0 up
+ip link set vethbr-1 up
+ip link set vethbr-2 up
+brctl addif brtest0 vethbr-0
+brctl addif brtest0 vethbr-1
+brctl addif brtest0 vethbr-2
+
+# linux vlan
+1, 创建vlan网卡并分配不同的vlan ID
+ip link add link eth1 name eth1.100 type vlan id 100
+ip link add link eth1 name eth1.101 type vlan id 101
+注意：对于相同的vlan id,只能创建一个设备
+2，为vlan设备分配IP地址
+ip addr add 10.20.30.2/24 brd 10.20.30.255 dev eth1.100
+ip addr add 10.20.40.2/24 brd 10.20.40.255 dev eth1.101
+ip link set dev eth1.100 up
+ip link set dev eth1.101 up

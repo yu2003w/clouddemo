@@ -1,0 +1,129 @@
+# create provider network
+. admin-openrc
+openstack network create  --share --external \
+  --provider-physical-network provider \
+  --provider-network-type flat provider
+openstack subnet create --network provider \
+  --allocation-pool start=192.168.21.200,end=192.168.21.254 \
+  --dns-nameserver 192.168.8.254 --gateway 192.168.21.1 \
+  --subnet-range 192.168.21.0/24 provider
+
+# create selfservice network
+. demo-openrc
+openstack network create selfservice
+openstack subnet create --network selfservice \
+  --dns-nameserver 192.168.8.254 --gateway 175.19.1.1 \
+  --subnet-range 175.19.1.0/24 neutest1
+
+# DNS internal integration with dnsmasq, update dns_domain to "yamuiaas.com." , without last ., port couldn't be 
+# activated successfully. To enable dnsmasq log, set dnsmasq_base_log_dir = /var/lib/neutron/dnsmasq 
+# in /etc/neutron/dhcp_agent.ini. And if cirros images is used, try "ping -4 -c 2" as it send ipv6 requests.
+# https://docs.openstack.org/neutron/victoria/admin/config-dns-int.html
+
+openstack router create neurouter
+openstack router set neurouter --external-gateway provider
+openstack router add subnet neurouter neutest1
+
+
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=dc1a1c72-b448-4929-8751-f66b8e3e2af0 --security-group default \
+  --key-name mykey dns3
+
+openstack subnet create --network selfservice \
+  --dns-nameserver 192.168.8.254 --gateway 175.19.2.1 \
+  --subnet-range 175.19.2.0/24 neutest2
+openstack router add subnet neurouter neutest2
+
+openstack subnet create --network selfservice \
+  --dns-nameserver 192.168.8.254 --gateway 175.19.3.1 \
+  --subnet-range 175.19.3.0/24 neutest3
+openstack router add subnet neurouter neutest3
+
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=dc1a1c72-b448-4929-8751-f66b8e3e2af0 \
+  --security-group default \
+  --key-name mykey dns4
+
+openstack port create --security-group default \
+  --fixed-ip subnet=a8440ece-adda-47e0-a679-09695aa7ab82 \
+  --network dc1a1c72-b448-4929-8751-f66b8e3e2af0 dns3
+
+openstack server create --flavor m1.nano --image cirros \
+  --port dns3 \
+  --security-group default \
+  --key-name mykey dns3
+
+# how to clean subnet 
+openstack router remove subnet selfservice selfservice
+
+
+
+# create another tenant in new project and domain, project name should not be the same with user name
+openstack domain create --description "A domain for neutron and designate test" network-test
+openstack project create --domain network-test --description "Service Project" service
+openstack project create --domain default --description "Network Test Project" nwtest
+openstack user create --domain default --password-prompt nwtest1
+openstack role create nwtest
+openstack role add --project nwtest --user nwtest1 nwtest
+
+unset OS_AUTH_URL OS_PASSWORD
+openstack --os-auth-url http://192.168.20.62:5000/v3 \
+--os-project-domain-name Default --os-user-domain-name Default \
+--os-project-name nwtest --os-username nwtest1 token issue
+
+openstack network create neutron-test
+openstack subnet create --network neutron-test \
+  --dns-nameserver 192.168.8.254 --gateway 175.22.1.1 \
+  --subnet-range 175.22.1.0/24 internal-neutron
+
+openstack subnet set --dns-nameserver 175.22.1.2 internal-neutron
+
+openstack router create introuter
+openstack router add subnet introuter internal-neutron
+openstack router set introuter --external-gateway provider
+
+ssh-keygen -q -N ""
+openstack keypair create --public-key ~/.ssh/id_rsa.pub mykey
+openstack keypair list
+openstack security group rule create --proto icmp default
+openstack security group rule create --proto tcp --dst-port 22 default
+
+openstack port create --network neutron-test --dns-name nwtest network-test
+
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=7d8b581d-9a1a-45b0-abb5-67184d83d2a4 --security-group default \
+  --key-name mykey nwtest1
+
+
+# create separate domain, project, user, role, network and subnet
+openstack domain create --description "A domain for neutron and designate test" ATest
+openstack project create --domain ATest --description "openstack test cases" ATestProj
+openstack user create --domain ATest --password-prompt atest1
+openstack role create atestrole
+openstack role add --project atestproj --user atest1 atestrole
+
+unset OS_AUTH_URL OS_PASSWORD
+openstack --os-auth-url http://192.168.20.62:5000/v3 \
+--os-project-domain-name ATest --os-user-domain-name ATest \
+--os-project-name ATestProj --os-username atest1 token issue
+
+openstack network create selfservice
+openstack subnet create --network selfservice \
+  --dns-nameserver 175.19.1.2 --gateway 175.19.1.1 \
+  --subnet-range 175.19.1.0/24 selfservice
+
+openstack router create introuter
+openstack router add subnet introuter selfservice
+openstack router set introuter --external-gateway provider
+
+openstack port create --network selfservice --dns-name atest atest-port
+
+openstack keypair create --public-key ~/.ssh/id_rsa.pub atestkey
+openstack keypair list
+openstack security group rule create --proto icmp default
+openstack security group rule create --proto tcp --dst-port 22 default
+
+openstack server create --flavor m1.nano --image cirros \
+  --nic net-id=b1ff1fcc-dc16-4db7-8a65-c7230bb96e1b --security-group default \
+  --key-name atestkey atest1
+

@@ -1,0 +1,4 @@
+# set proxy for git client
+git config --global http.proxy http://127.0.0.1:58591
+
+git config --global --unset http.proxy
