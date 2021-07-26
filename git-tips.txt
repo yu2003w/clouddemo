@@ -2,3 +2,6 @@
 git config --global http.proxy http://127.0.0.1:58591
 
 git config --global --unset http.proxy
+
+# change last commit message
+git commit --amend -m
