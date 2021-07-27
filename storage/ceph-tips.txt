@@ -155,7 +155,7 @@ openstack volume snapshot create --volume test-ceph test-ceph-1
 openstack server image create --name test-ceph-2 vol-inst
 openstack server create --flavor m1.medium --key-name mykey \
   --nic net-id=dc1a1c72-b448-4929-8751-f66b8e3e2af0 --security-group default \
-  --boot-from-volume ed3cda62-8d94-4cca-a8dd-5a983427a96d vol-inst1
+  --volume ed3cda62-8d94-4cca-a8dd-5a983427a96d vol-inst1
 
 # how to partition a disk
 fdisk /dev/vdb to create G table
@@ -192,3 +192,14 @@ ceph osd erasure-code-profile
 rbd ls <pool>
 rbd info <pool>/<image>
 
+
+# volume backup
+openstack volume backup create <volume id>
+openstack volume backup restore <backup id> <volume id>
+
+# take snapshot from instance, then create volume from snapshot, then boot new instance from volume
+openstack volume snapshot create --force --volume 84fb00c0-6f00-4376-bf75-5ca349053464 test-ceph3
+openstack volume create --snapshot 183726c6-4a07-4a8c-8eb5-6d08cad04206 --type ceph test-ceph3-vol
+openstack server create --flavor m1.medium --key-name mykey \
+  --nic net-id=dc1a1c72-b448-4929-8751-f66b8e3e2af0 --security-group default \
+  --volume d672d637-608d-4633-ac96-202371e1c70f vol-inst1
